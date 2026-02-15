@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ AUTH ============
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ============ USERS & TEAMS ============
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  role          UserRole  @default(OWNER)
+  accounts      Account[]
+  sessions      Session[]
+  teamMembers   TeamMember[]
+  messages      Message[]
+  assignedChats Chat[]    @relation("AssignedAgent")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Team {
+  id          String       @id @default(cuid())
+  name        String
+  members     TeamMember[]
+  bots        Bot[]
+  channels    Channel[]
+  flows       Flow[]
+  contacts    Contact[]
+  sheets      GoogleSheet[]
+  apiKeys     ApiKey[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model TeamMember {
+  id     String         @id @default(cuid())
+  userId String
+  teamId String
+  role   TeamMemberRole @default(MEMBER)
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team   Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum TeamMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// ============ BOTS & CHANNELS ============
+
+model Bot {
+  id        String    @id @default(cuid())
+  name      String
+  teamId    String
+  isActive  Boolean   @default(true)
+  team      Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  channels  Channel[]
+  flows     Flow[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Channel {
+  id           String      @id @default(cuid())
+  type         ChannelType
+  name         String
+  teamId       String
+  botId        String?
+  // Platform-specific credentials (encrypted)
+  accessToken  String?     @db.Text
+  pageId       String?     // Facebook Page ID
+  botToken     String?     @db.Text  // Telegram Bot Token
+  webhookUrl   String?
+  isConnected  Boolean     @default(false)
+  team         Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  bot          Bot?        @relation(fields: [botId], references: [id])
+  contacts     Contact[]
+  chats        Chat[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+enum ChannelType {
+  FACEBOOK_MESSENGER
+  TELEGRAM
+}
+
+// ============ FLOW BUILDER ============
+
+model Flow {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  teamId      String
+  botId       String?
+  isActive    Boolean    @default(false)
+  triggerType TriggerType @default(KEYWORD)
+  triggerValue String?
+  nodes       Json       // React Flow nodes
+  edges       Json       // React Flow edges
+  team        Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  bot         Bot?       @relation(fields: [botId], references: [id])
+  executions  FlowExecution[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model FlowExecution {
+  id        String   @id @default(cuid())
+  flowId    String
+  contactId String?
+  chatId    String?
+  status    String   @default("running")
+  currentNode String?
+  variables Json?
+  flow      Flow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+}
+
+enum TriggerType {
+  KEYWORD
+  FIRST_MESSAGE
+  BUTTON_CLICK
+  MANUAL
+  API
+}
+
+// ============ CONTACTS & CHATS ============
+
+model Contact {
+  id             String    @id @default(cuid())
+  platformId     String    // User ID on the platform
+  channelId      String
+  teamId         String
+  name           String?
+  email          String?
+  phone          String?
+  avatarUrl      String?
+  metadata       Json?     // Custom fields
+  tags           String[]
+  channel        Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  team           Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  chats          Chat[]
+  flowExecutions FlowExecution[]
+  analyticsEvents AnalyticsEvent[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([platformId, channelId])
+}
+
+model Chat {
+  id          String     @id @default(cuid())
+  contactId   String
+  channelId   String
+  assignedTo  String?
+  status      ChatStatus @default(OPEN)
+  subject     String?
+  contact     Contact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  channel     Channel    @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  assignedAgent User?    @relation("AssignedAgent", fields: [assignedTo], references: [id])
+  messages    Message[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  chatId    String
+  senderId  String?     // null = bot message
+  direction MessageDirection
+  type      MessageType @default(TEXT)
+  content   String      @db.Text
+  metadata  Json?       // buttons, attachments, etc.
+  chat      Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender    User?       @relation(fields: [senderId], references: [id])
+  createdAt DateTime    @default(now())
+}
+
+enum ChatStatus {
+  OPEN
+  ASSIGNED
+  RESOLVED
+  CLOSED
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  BUTTON
+  QUICK_REPLY
+  CARD
+  FLOW_ACTION
+}
+
+// ============ GOOGLE SHEETS ============
+
+model GoogleSheet {
+  id           String  @id @default(cuid())
+  teamId       String
+  name         String
+  spreadsheetId String
+  sheetName    String  @default("Sheet1")
+  accessToken  String? @db.Text
+  refreshToken String? @db.Text
+  isConnected  Boolean @default(false)
+  team         Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ============ ANALYTICS ============
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  contactId String?
+  eventType String
+  eventData Json?
+  channel   String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+// ============ API KEYS ============
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  teamId    String
+  name      String
+  key       String   @unique
+  isActive  Boolean  @default(true)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  lastUsed  DateTime?
+}
